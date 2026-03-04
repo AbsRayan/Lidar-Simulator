@@ -1,6 +1,8 @@
+import os
 import sys
 from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QStackedWidget
 from gl_widget import SceneGLWidget
+from config_loader import ConfigLoader
 
 
 class MainWindow(QMainWindow):
@@ -39,6 +41,8 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(self.menu_page)
         self.stacked_widget.addWidget(self.sim_page)
 
+        self._load_configs()
+
     def show_simulation(self):
         """Переключает интерфейс на окно симуляции"""
         self.stacked_widget.setCurrentWidget(self.sim_page)
@@ -46,6 +50,24 @@ class MainWindow(QMainWindow):
     def show_menu(self):
         """Возвращает в главное меню"""
         self.stacked_widget.setCurrentWidget(self.menu_page)
+
+    def _load_configs(self):
+        """Загрузка конфигураций сенсоров"""
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        yaml_path = os.path.join(base_dir, 'configs', 'sensor.yaml')
+        toml_path = os.path.join(base_dir, 'configs', 'sensor.toml')
+        
+        try:
+            lidar_config = ConfigLoader.load(yaml_path)
+            print(f"Loaded YAML config (LiDAR): {lidar_config}")
+        except Exception as e:
+            print(f"Error loading YAML config: {e}")
+            
+        try:
+            camera_config = ConfigLoader.load(toml_path)
+            print(f"Loaded TOML config (Camera): {camera_config}")
+        except Exception as e:
+            print(f"Error loading TOML config: {e}")
 
 
 if __name__ == "__main__":
