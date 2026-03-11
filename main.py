@@ -1,6 +1,9 @@
 import os
 import sys
-from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QStackedWidget
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QPushButton, QVBoxLayout,
+    QWidget, QStackedWidget, QFileDialog, QMessageBox
+)
 from gl_widget import SceneGLWidget
 from config_loader import ConfigLoader
 
@@ -35,6 +38,11 @@ class MainWindow(QMainWindow):
         self.back_button.clicked.connect(self.show_menu)
         self.sim_layout.addWidget(self.back_button)
 
+        self.load_camera_button = QPushButton("Загрузить конфиг камеры")
+        self.load_camera_button.setFixedSize(250, 30)
+        self.load_camera_button.clicked.connect(self.load_camera_config)
+        self.sim_layout.addWidget(self.load_camera_button)
+
         self.gl_scene = SceneGLWidget()
         self.sim_layout.addWidget(self.gl_scene)
 
@@ -50,6 +58,34 @@ class MainWindow(QMainWindow):
     def show_menu(self):
         """Возвращает в главное меню"""
         self.stacked_widget.setCurrentWidget(self.menu_page)
+
+    def load_camera_config(self):
+        """Открывает диалог выбора файла конфига камеры и применяет параметры к сцене"""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Выберите файл конфигурации камеры",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'configs'),
+            "Config files (*.yaml *.yml *.toml);;All files (*.*)"
+        )
+        if not path:
+            return  # пользователь отменил диалог
+        try:
+            config = ConfigLoader.load(path)
+            if config.get('type', '').lower() not in ('camera', ''):
+                # Предупреждаем, но всё равно применяем — на случай конфига без поля type
+                pass
+            self.gl_scene.apply_camera_config(config)
+            name = config.get('name', os.path.basename(path))
+            QMessageBox.information(
+                self,
+                "Конфиг применён",
+                f"Камера \«{name}\» загружена.\n"
+                f"FOV: {self.gl_scene.cam_fov}°  "
+                f"Near: {self.gl_scene.cam_near}  "
+                f"Far: {self.gl_scene.cam_far}"
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка загрузки", str(e))
 
     def _load_configs(self):
         """Загрузка конфигураций сенсоров"""

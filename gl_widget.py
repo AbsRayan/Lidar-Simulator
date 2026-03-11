@@ -6,6 +6,7 @@ import ctypes
 
 import numpy as np
 import stl_loader
+from PyQt6.QtGui import QImage
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from OpenGL.GL import *
 from OpenGL.GL import shaders as gl_shaders
@@ -23,6 +24,8 @@ def _load_shader_source(filename: str) -> str:
 
 VERTEX_SHADER_SRC = _load_shader_source('vertex.glsl')
 FRAGMENT_SHADER_SRC = _load_shader_source('fragment.glsl')
+MODEL_VERTEX_SHADER_SRC = _load_shader_source('model_vertex.glsl')
+MODEL_FRAGMENT_SHADER_SRC = _load_shader_source('model_fragment.glsl')
 
 # Каждая строка: posX, posY, texU, texV
 QUAD_VERTICES = np.array([
@@ -47,6 +50,11 @@ class SceneGLWidget(QOpenGLWidget):
         self.zoom = -8.0
         self.last_pos = None
 
+        # Параметры камеры (можно обновить через apply_camera_config)
+        self.cam_fov = 45.0
+        self.cam_near = 0.1
+        self.cam_far = 100.0
+
         # OpenGL ресурсы (создаются в initializeGL)
         self.quadric = None
         self.airplane_list = None
@@ -61,8 +69,13 @@ class SceneGLWidget(QOpenGLWidget):
 
         # Шейдер и fullscreen quad
         self.shader_program = None
+        self.model_shader_program = None
         self.quad_vao = None
         self.quad_vbo = None
+
+        # Текстура проектора
+        self.projector_texture = None
+        self.texture_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'base_texture.png')
 
         # Загрузка STL-модели
         self.airplane_mesh = stl_loader.load_stl('models/Mig29.stl')
@@ -75,6 +88,8 @@ class SceneGLWidget(QOpenGLWidget):
         self._create_shader()
         self._create_fullscreen_quad()
         self._create_fbo(self.width() or 800, self.height() or 600)
+        if self.projector_texture is None:
+            self.projector_texture = self._load_texture(self.texture_path)
 
     def _init_scene_resources(self):
         """Инициализация ресурсов для 3D-сцены"""
@@ -141,11 +156,77 @@ class SceneGLWidget(QOpenGLWidget):
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
 
 
+    def _load_texture(self, file_path):
+        """Загружает текстуру из файла для проектора."""
+        img = QImage(file_path)
+        if img.isNull():
+            print(f"Failed to load image: {file_path}")
+            return None
+            
+        img = img.convertToFormat(QImage.Format.Format_RGBA8888)
+        width = img.width()
+        height = img.height()
+        
+        ptr = img.constBits()
+        ptr.setsize(width * height * 4)
+        data = np.frombuffer(ptr, dtype=np.uint8).copy()
+        
+        tex_id = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, tex_id)
+        
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER)
+        glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, [0.0, 0.0, 0.0, 0.0])
+        
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data)
+        glBindTexture(GL_TEXTURE_2D, 0)
+        
+        return tex_id
+
+    def _get_projector_matrix(self, is_airplane=False):
+        """Вычисляет матрицу проектора для переданного объекта (в локальных координатах объекта)"""
+        glMatrixMode(GL_PROJECTION)
+        glPushMatrix()
+        glLoadIdentity()
+        
+        # Bias (переход в диапазон [0, 1] для текстурных координат)
+        glTranslatef(0.5, 0.5, 0.5)
+        glScalef(0.5, 0.5, 0.5)
+        
+        # Проекция проектора (угол обзора)
+        gluPerspective(30.0, 1.0, 0.1, 100.0)
+        
+        # Вид проектора
+        gluLookAt(2.0, 3.0, 4.0,  # позиция проектора
+                  2.0, 0.0, 0.0,  # точка, куда он смотрит 
+                  0.0, 1.0, 0.0)  # вектор "вверх"
+        
+        # Перенос из локальных координат модели в мировые, 
+        # чтобы координаты вершин совпадали с пространством проектора.
+        if is_airplane:
+            glTranslatef(2.0, 0.0, 0.0)
+        else:
+            glTranslatef(-2.0, 0.0, 0.0)
+            
+        proj_matrix = glGetFloatv(GL_PROJECTION_MATRIX)
+        
+        glPopMatrix()
+        glMatrixMode(GL_MODELVIEW)
+        
+        return proj_matrix
+
     def _create_shader(self):
         """Компиляция шейдерной программы"""
         vertex = gl_shaders.compileShader(VERTEX_SHADER_SRC, GL_VERTEX_SHADER)
         fragment = gl_shaders.compileShader(FRAGMENT_SHADER_SRC, GL_FRAGMENT_SHADER)
         self.shader_program = gl_shaders.compileProgram(vertex, fragment)
+        
+        m_vertex = gl_shaders.compileShader(MODEL_VERTEX_SHADER_SRC, GL_VERTEX_SHADER)
+        m_fragment = gl_shaders.compileShader(MODEL_FRAGMENT_SHADER_SRC, GL_FRAGMENT_SHADER)
+        self.model_shader_program = gl_shaders.compileProgram(m_vertex, m_fragment)
 
 
     def _create_fullscreen_quad(self):
@@ -200,7 +281,7 @@ class SceneGLWidget(QOpenGLWidget):
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
         aspect = self.fbo_width / max(self.fbo_height, 1)
-        gluPerspective(45, aspect, 0.1, 100.0)
+        gluPerspective(self.cam_fov, aspect, self.cam_near, self.cam_far)
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
 
@@ -210,7 +291,28 @@ class SceneGLWidget(QOpenGLWidget):
 
         glLightfv(GL_LIGHT0, GL_POSITION, (5, 5, -5, 1))
 
+        # Настраиваем шейдер для проекции на модели
+        glUseProgram(self.model_shader_program)
+        
+        loc_tex = glGetUniformLocation(self.model_shader_program, "projectorTexture")
+        loc_use_proj = glGetUniformLocation(self.model_shader_program, "useProjector")
+        loc_mat = glGetUniformLocation(self.model_shader_program, "projectorMatrix")
+        
+        glUniform1i(loc_tex, 1) # Текстурный юнит 1
+        
+        glActiveTexture(GL_TEXTURE1)
+        if self.projector_texture is not None:
+            glBindTexture(GL_TEXTURE_2D, self.projector_texture)
+            glUniform1i(loc_use_proj, 1)
+        else:
+            glBindTexture(GL_TEXTURE_2D, 0)
+            glUniform1i(loc_use_proj, 0)
+        glActiveTexture(GL_TEXTURE0)
+
         # Шар
+        sphere_proj = self._get_projector_matrix(is_airplane=False)
+        glUniformMatrix4fv(loc_mat, 1, GL_FALSE, sphere_proj)
+        
         glPushMatrix()
         glTranslatef(-2.0, 0.0, 0.0)
         glColor3f(0.1, 0.7, 0.4)
@@ -219,11 +321,16 @@ class SceneGLWidget(QOpenGLWidget):
 
         # Самолёт
         if self.airplane_list is not None:
+            airplane_proj = self._get_projector_matrix(is_airplane=True)
+            glUniformMatrix4fv(loc_mat, 1, GL_FALSE, airplane_proj)
+            
             glPushMatrix()
             glTranslatef(2.0, 0.0, 0.0)
             glColor3f(0.1, 0.8, 0.7)
             glCallList(self.airplane_list)
             glPopMatrix()
+
+        glUseProgram(0)
 
         glBindFramebuffer(GL_FRAMEBUFFER, self.defaultFramebufferObject())
         glViewport(0, 0, w, h)
@@ -249,6 +356,28 @@ class SceneGLWidget(QOpenGLWidget):
         glBindTexture(GL_TEXTURE_2D, 0)
 
 
+    def apply_camera_config(self, config: dict):
+        """
+        Применяет параметры камеры из словаря конфигурации.
+        Поддерживаемые ключи: fov, near, far, resolution.
+        Вызывает обновление сцены сразу после применения.
+        """
+        if 'fov' in config:
+            self.cam_fov = float(config['fov'])
+        if 'near' in config:
+            self.cam_near = float(config['near'])
+        if 'far' in config:
+            self.cam_far = float(config['far'])
+        # resolution влияет только на aspect ratio FBO — пересоздавать FBO не нужно,
+        # т.к. aspect ratio берётся из реального размера виджета.
+        # Но сохраняем значение для возможного будущего использования.
+        if 'resolution' in config:
+            res = config['resolution']
+            if isinstance(res, (list, tuple)) and len(res) == 2:
+                self._config_resolution = (int(res[0]), int(res[1]))
+        print(f"[Camera] fov={self.cam_fov}°  near={self.cam_near}  far={self.cam_far}")
+        self.update()
+
     def cleanup(self):
         """Очистка всех OpenGL ресурсов"""
         self.makeCurrent()
@@ -270,6 +399,12 @@ class SceneGLWidget(QOpenGLWidget):
         if self.shader_program is not None:
             glDeleteProgram(self.shader_program)
             self.shader_program = None
+        if self.model_shader_program is not None:
+            glDeleteProgram(self.model_shader_program)
+            self.model_shader_program = None
+        if self.projector_texture is not None:
+            glDeleteTextures(1, [self.projector_texture])
+            self.projector_texture = None
         if self.quad_vao is not None:
             glDeleteVertexArrays(1, [self.quad_vao])
             self.quad_vao = None
@@ -293,6 +428,8 @@ class SceneGLWidget(QOpenGLWidget):
             self._create_shader()
             self._create_fullscreen_quad()
             self._create_fbo(self.width() or 800, self.height() or 600)
+            if self.projector_texture is None:
+                self.projector_texture = self._load_texture(self.texture_path)
             self.doneCurrent()
             self.update()
 
