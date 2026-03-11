@@ -45,15 +45,19 @@ class SceneGLWidget(QOpenGLWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.rotation_x = 0.0
-        self.rotation_y = 0.0
-        self.zoom = -8.0
-        self.last_pos = None
+        
+        # Положение камеры (для gluLookAt)
+        self.camera_pos = [0.0, 0.0, 8.0]
+        self.camera_target = [0.0, 0.0, 0.0]
 
-        # Параметры камеры (можно обновить через apply_camera_config)
+        # Параметры перспективы (можно обновить через apply_camera_config)
         self.cam_fov = 45.0
         self.cam_near = 0.1
         self.cam_far = 100.0
+
+        # Позиции объектов в сцене (X, Y, Z)
+        self.sphere_pos = [-2.0, 0.0, 0.0]
+        self.airplane_pos = [2.0, 0.0, 0.0]
 
         # OpenGL ресурсы (создаются в initializeGL)
         self.quadric = None
@@ -207,9 +211,9 @@ class SceneGLWidget(QOpenGLWidget):
         # Перенос из локальных координат модели в мировые, 
         # чтобы координаты вершин совпадали с пространством проектора.
         if is_airplane:
-            glTranslatef(2.0, 0.0, 0.0)
+            glTranslatef(self.airplane_pos[0], self.airplane_pos[1], self.airplane_pos[2])
         else:
-            glTranslatef(-2.0, 0.0, 0.0)
+            glTranslatef(self.sphere_pos[0], self.sphere_pos[1], self.sphere_pos[2])
             
         proj_matrix = glGetFloatv(GL_PROJECTION_MATRIX)
         
@@ -285,9 +289,11 @@ class SceneGLWidget(QOpenGLWidget):
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
 
-        glTranslatef(0.0, 0.0, self.zoom)
-        glRotatef(self.rotation_x, 1, 0, 0)
-        glRotatef(self.rotation_y, 0, 1, 0)
+        gluLookAt(
+            self.camera_pos[0], self.camera_pos[1], self.camera_pos[2],
+            self.camera_target[0], self.camera_target[1], self.camera_target[2],
+            0.0, 1.0, 0.0
+        )
 
         glLightfv(GL_LIGHT0, GL_POSITION, (5, 5, -5, 1))
 
@@ -314,7 +320,7 @@ class SceneGLWidget(QOpenGLWidget):
         glUniformMatrix4fv(loc_mat, 1, GL_FALSE, sphere_proj)
         
         glPushMatrix()
-        glTranslatef(-2.0, 0.0, 0.0)
+        glTranslatef(self.sphere_pos[0], self.sphere_pos[1], self.sphere_pos[2])
         glColor3f(0.1, 0.7, 0.4)
         gluSphere(self.quadric, 1.0, 32, 32)
         glPopMatrix()
@@ -325,7 +331,7 @@ class SceneGLWidget(QOpenGLWidget):
             glUniformMatrix4fv(loc_mat, 1, GL_FALSE, airplane_proj)
             
             glPushMatrix()
-            glTranslatef(2.0, 0.0, 0.0)
+            glTranslatef(self.airplane_pos[0], self.airplane_pos[1], self.airplane_pos[2])
             glColor3f(0.1, 0.8, 0.7)
             glCallList(self.airplane_list)
             glPopMatrix()
@@ -375,7 +381,16 @@ class SceneGLWidget(QOpenGLWidget):
             res = config['resolution']
             if isinstance(res, (list, tuple)) and len(res) == 2:
                 self._config_resolution = (int(res[0]), int(res[1]))
-        print(f"[Camera] fov={self.cam_fov}°  near={self.cam_near}  far={self.cam_far}")
+        if 'position' in config:
+            pos = config['position']
+            if isinstance(pos, (list, tuple)) and len(pos) == 3:
+                self.camera_pos = [float(pos[0]), float(pos[1]), float(pos[2])]
+        if 'target' in config:
+            tgt = config['target']
+            if isinstance(tgt, (list, tuple)) and len(tgt) == 3:
+                self.camera_target = [float(tgt[0]), float(tgt[1]), float(tgt[2])]
+                
+        print(f"[Camera] pos={self.camera_pos} fov={self.cam_fov}° near={self.cam_near} far={self.cam_far}")
         self.update()
 
     def cleanup(self):
@@ -434,17 +449,11 @@ class SceneGLWidget(QOpenGLWidget):
             self.update()
 
     def mousePressEvent(self, event):
-        self.last_pos = event.position()
+        pass # Управление перенесено в UI панели настроек
 
     def mouseMoveEvent(self, event):
-        if self.last_pos is not None:
-            diff = event.position() - self.last_pos
-            self.rotation_x += diff.y() * 0.5
-            self.rotation_y += diff.x() * 0.5
-            self.last_pos = event.position()
-            self.update()
+        pass
 
     def wheelEvent(self, event):
-        delta = event.angleDelta().y() / 120
-        self.zoom += delta * 0.5
-        self.update()
+        pass
+
